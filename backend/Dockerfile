@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Upgrade pip and install build tools
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+RUN pip install --no-cache-dir --upgrade pip "setuptools<81.0.0" wheel
 
 # Install openai-whisper separately with --no-build-isolation so it can find
 # pkg_resources from the global setuptools (PEP 517 isolated envs don't see it)
