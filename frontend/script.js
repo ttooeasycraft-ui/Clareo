@@ -204,8 +204,11 @@ function showResults(clips) {
     const scoreValue = document.createElement("span");
     scoreValue.className = "clip-score-value";
     // Use backend score if available, else estimate from index (best clips first)
-    const rawScore = clip.score != null
-      ? Math.min(99, Math.round(50 + clip.score * 49))
+    // Backend score = kw_score + vol_score (unbounded, typically 0–3+).
+    // Map 0 → 60, 3 → 99; clamp to [50, 99]. Fallback by rank when absent.
+    const numericScore = Number(clip.score);
+    const rawScore = Number.isFinite(numericScore)
+      ? Math.min(99, Math.max(50, Math.round(60 + (numericScore / 3) * 39)))
       : Math.max(70, 97 - i * 4);
     scoreValue.textContent = rawScore;
     scoreBadge.append(scoreLabel, scoreValue);
