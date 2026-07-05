@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Install system dependencies
+# System deps
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     git \
@@ -9,21 +9,22 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Upgrade pip and install build tools
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+# Pin setuptools<81 — setuptools 81+ broke pkg_resources in legacy setup.py
+# builds (openai-whisper==20240930 still uses setup.py + pkg_resources).
+# Must happen BEFORE installing whisper.
+RUN pip install --no-cache-dir --upgrade pip \
+ && pip install --no-cache-dir "setuptools<81" wheel
 
-# Install openai-whisper separately with --no-build-isolation so it can find
-# pkg_resources from the global setuptools (PEP 517 isolated envs don't see it)
-RUN pip install --no-cache-dir --no-build-isolation openai-whisper==20240930
+# Install whisper with --no-build-isolation so it uses the pinned setuptools above
+RUN pip install --no-cache-dir --no-build-isolation "openai-whisper==20240930"
 
-# Install remaining Python deps
+# Install the rest of the deps
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy source
 COPY . .
 
-# Create jobs directory
 RUN mkdir -p jobs
 
 EXPOSE 8000
