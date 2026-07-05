@@ -21,6 +21,7 @@ jobs:
         run: |
           rm -rf docs
           cp -r frontend docs
+          touch docs/.nojekyll
 
       - name: Commit and push docs
         run: |
