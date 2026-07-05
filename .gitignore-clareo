@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+venv/
+.venv/
+dist/
+build/
+
+# Whisper model cache
+~/.cache/whisper/
+
+# Job outputs
+backend/jobs/
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Replit
+.replit
+replit.nix
+.upm/
+.config/
+.local/
+artifacts/
+lib/
+scripts/
+pnpm-lock.yaml
+pnpm-workspace.yaml
+tsconfig*.json
+package.json

@@ -1,6 +1,6 @@
-# ClipAI — Gerador de Clipes Virais
+# Clareo — AI Video Clip Generator
 
-Recebe um link de vídeo, detecta os melhores momentos automaticamente, corta em clipes 9:16 com legenda queimada.
+> Cole o link de qualquer vídeo. Clareo encontra os melhores momentos, corta em 9:16 e queima legenda estilo karaokê — automático.
 
 ---
 
@@ -10,19 +10,19 @@ Recebe um link de vídeo, detecta os melhores momentos automaticamente, corta em
 URL do vídeo
     │
     ▼
-yt-dlp          ← baixa o vídeo (YouTube, TikTok, Instagram, etc.)
+yt-dlp          ← baixa o vídeo (YouTube, TikTok, Instagram, Twitch, +1000 sites)
     │
     ▼
-Whisper         ← transcreve a fala em português (roda local, gratuito)
+Whisper         ← transcreve a fala em português, palavra por palavra (open-source, gratuito)
     │
     ▼
-Detecção        ← palavras-chave + picos de volume → score por segmento
+Detecção        ← volume peaks + palavras-chave → score por segmento
     │
     ▼
-ffmpeg          ← corta os melhores trechos, converte 9:16, queima legenda ASS
+ffmpeg          ← corta os melhores trechos, converte 9:16, queima legenda karaokê (ASS)
     │
     ▼
-Download        ← clipes prontos para reels/shorts
+Download        ← clipes prontos para Reels, Shorts e TikTok
 ```
 
 ---
@@ -30,162 +30,162 @@ Download        ← clipes prontos para reels/shorts
 ## Estrutura
 
 ```
-backend/      ← Python/FastAPI (deploy no Railway)
-frontend/     ← HTML/CSS/JS puro (deploy no GitHub Pages)
+backend/          ← Python/FastAPI (deploy no Railway)
+  main.py         ← API REST + gerenciamento de jobs assíncronos
+  video_processor.py ← pipeline completo: download → transcrição → score → corte
+  requirements.txt
+  Dockerfile
+  railway.toml
+
+frontend/         ← HTML/CSS/JS puro (deploy no GitHub Pages)
+  index.html      ← UI completa do Clareo
+  style.css       ← design system teal/charcoal
+  script.js       ← fetch + polling + download
 ```
 
 ---
 
-## Backend
+## Deploy
 
-### Pré-requisitos locais
+### Backend → Railway
 
-- Python 3.11+
-- ffmpeg instalado no sistema (`apt install ffmpeg` / `brew install ffmpeg`)
+1. Crie conta em [railway.app](https://railway.app)
+2. **New Project → Deploy from GitHub repo** → selecione este repositório
+3. Configure o **Root Directory** para `backend`
+4. Railway detecta o `Dockerfile` automaticamente
+5. Copie a URL pública gerada (ex: `https://clareo-backend.up.railway.app`)
 
-### Rodar localmente
+> **RAM mínima:** o modelo Whisper `small` usa ~2 GB. Ajuste o plano no Railway conforme necessário.
+> Para economizar, use `WHISPER_MODEL=tiny` (mais rápido, menos preciso).
+
+**Variáveis de ambiente opcionais (Railway dashboard):**
+
+| Variável        | Padrão  | Descrição                              |
+|-----------------|---------|----------------------------------------|
+| `WHISPER_MODEL` | `small` | Modelo Whisper: tiny, base, small, medium, large |
+
+### Frontend → GitHub Pages
+
+1. Em `frontend/script.js`, substitua `YOUR-RAILWAY-BACKEND` pela URL do Railway:
+   ```js
+   const BACKEND_URL = "https://clareo-backend.up.railway.app";
+   ```
+2. Commit + push para o repositório GitHub
+3. **Settings → Pages → Source: Deploy from branch** → `main`, pasta `/frontend`
+4. Aguarde ~2 min — disponível em `https://seu-usuario.github.io/clareo/`
+
+---
+
+## Rodar localmente
+
+### Backend
 
 ```bash
+# Pré-requisitos: Python 3.11+, ffmpeg instalado
 cd backend
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-API disponível em `http://localhost:8000`
+API em `http://localhost:8000`
 
-### Endpoints
+### Frontend
 
-| Método | Rota                              | Descrição                        |
-|--------|-----------------------------------|----------------------------------|
-| POST   | `/process`                        | Inicia o processamento           |
-| GET    | `/status/{job_id}`                | Consulta o status do job         |
-| GET    | `/download/{job_id}/{filename}`   | Baixa um clipe gerado            |
+```bash
+cd frontend
+# Edite script.js: BACKEND_URL = "http://localhost:8000"
+# Abra index.html no navegador, ou:
+npx serve .
+```
 
-#### POST /process — body
+---
+
+## API Reference
+
+### `POST /process`
+
+Inicia o processamento de um vídeo.
 
 ```json
 {
   "url": "https://youtube.com/watch?v=...",
-  "keywords": ["caramba", "nossa"],
+  "keywords": ["incrível", "absurdo"],
   "min_clip_duration": 20,
   "max_clip_duration": 60,
   "max_clips": 5
 }
 ```
 
-#### GET /status/{job_id} — resposta
+**Resposta:**
+```json
+{ "job_id": "uuid-do-job" }
+```
+
+### `GET /status/{job_id}`
+
+Consulta o status do processamento.
 
 ```json
 {
-  "status": "done",
-  "progress": 100,
-  "message": "3 clipes prontos!",
-  "clips": [
-    {
-      "filename": "clip_01.mp4",
-      "label": "Clipe 1",
-      "start": 42.5,
-      "end": 62.5,
-      "reason": "palavras-chave: caramba + pico de volume"
-    }
-  ]
+  "status": "running",
+  "progress": 55,
+  "message": "Analisando momentos...",
+  "clips": []
 }
 ```
 
-Status possíveis: `queued` → `running` → `done` / `error`
+Status: `queued` → `running` → `done` / `error`
 
-### Deploy no Railway
+### `GET /download/{job_id}/{filename}`
 
-1. Crie uma conta em [railway.app](https://railway.app)
-2. Novo projeto → **Deploy from GitHub repo** → selecione este repo
-3. Configure o **Root Directory** como `backend`
-4. Railway detecta o `Dockerfile` automaticamente
-5. Copie a URL gerada (ex: `https://clipai-backend.up.railway.app`)
-
-> ⚠️ O Railway tem um limite de execução no plano gratuito. Para vídeos longos (>30min), considere o plano pago ou aumente o timeout.
+Download direto do clipe gerado.
 
 ---
 
-## Frontend
+## Algoritmo de detecção
 
-### Configurar URL do backend
+```
+score = keyword_score + volume_score
 
-Edite `frontend/script.js`, linha 4:
+keyword_score = soma de matches de palavras-chave no segmento
+                (palavrões e exclamações = peso 2×)
 
-```js
-const BACKEND_URL = "https://SEU-APP.up.railway.app";
+volume_score  = (volume_médio_do_segmento - baseline) / 10
+                onde baseline = 40º percentil do áudio inteiro
 ```
 
-### Rodar localmente
-
-Abra `frontend/index.html` direto no navegador, ou:
-
-```bash
-cd frontend
-npx serve .
-```
-
-### Deploy no GitHub Pages
-
-1. Faça push deste repositório para o GitHub
-2. Vá em **Settings → Pages**
-3. Source: **Deploy from a branch** → branch `main`, pasta `/frontend`
-4. Aguarde alguns minutos — o site estará em `https://seu-usuario.github.io/repo/`
-
-> Alternativamente, use Netlify ou Vercel com a pasta `frontend/` — sem configuração extra.
+Segmentos são selecionados em ordem decrescente de score, estendidos para `min_clip_duration`, sem overlap.
 
 ---
 
-## Algoritmo de detecção de momentos
+## Legendas karaokê
 
-Cada segmento da transcrição recebe um score:
+Usa ASS com tags `\kf` (karaoke fill) — cada palavra acende em teal/ciano conforme é falada:
 
-```
-score = kw_score + vol_score
-
-kw_score  = nº de palavras-chave encontradas no trecho
-            (palavrões valem 2×)
-vol_score = quanto o volume médio do trecho supera a
-            linha de base (40º percentil do áudio)
-```
-
-Os segmentos com maior score são selecionados, estendidos para a duração mínima configurada, e os overlaps são removidos.
+- Texto base: branco
+- Palavra atual: sweep teal da esquerda para direita
+- Fonte: Arial Black 82pt, outline preto de 5px
+- Posição: terço inferior do frame 9:16
 
 ---
 
-## Palavras-chave padrão
+## Modelos Whisper
 
-```
-caramba, nossa, meu deus, incrível, impossível, uau, wow, que isso,
-sério, mentira, absurdo, fantástico, impressionante, surreal,
-não acredito, olha isso, cara, demais,
-puta, merda, porra, caralho, kkkk, hahaha, rsrs
-```
-
-Você pode adicionar palavras extras pelo frontend (campo "Opções avançadas").
-
----
-
-## Modelos Whisper disponíveis
-
-| Modelo  | VRAM   | Velocidade | Precisão |
-|---------|--------|------------|----------|
-| tiny    | ~1 GB  | ⚡⚡⚡      | ★☆☆      |
-| base    | ~1 GB  | ⚡⚡        | ★★☆      |
-| small   | ~2 GB  | ⚡          | ★★★      |
-| medium  | ~5 GB  | lento      | ★★★★     |
-| large   | ~10 GB | muito lento| ★★★★★    |
-
-O padrão é `small` — bom equilíbrio entre velocidade e precisão para português.
-Para alterar, edite `video_processor.py`, linha `model_name="small"`.
+| Modelo   | RAM    | Velocidade | Precisão PT |
+|----------|--------|------------|-------------|
+| `tiny`   | ~1 GB  | ⚡⚡⚡      | ★☆☆         |
+| `base`   | ~1 GB  | ⚡⚡        | ★★☆         |
+| `small`  | ~2 GB  | ⚡          | ★★★ (padrão)|
+| `medium` | ~5 GB  | lento      | ★★★★        |
+| `large`  | ~10 GB | muito lento| ★★★★★       |
 
 ---
 
-## Tecnologias
+## Stack
 
 - **Backend:** Python 3.11, FastAPI, Uvicorn
 - **Download:** yt-dlp
-- **Transcrição:** OpenAI Whisper (open-source, roda local)
-- **Análise de áudio:** ffmpeg, pydub
-- **Edição de vídeo:** ffmpeg (corte, 9:16, legendas ASS)
-- **Frontend:** HTML/CSS/JS puro (sem framework)
+- **Transcrição:** openai-whisper (local, sem custo de API)
+- **Análise de áudio:** ffmpeg, pydub, numpy
+- **Edição de vídeo:** ffmpeg (9:16 + ASS karaokê)
+- **Frontend:** HTML/CSS/JS puro

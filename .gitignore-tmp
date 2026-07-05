@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+venv/
+.venv/
+
+# Job outputs (generated at runtime)
+backend/jobs/
+
+# Node/Replit workspace (not part of clareo project)
+node_modules/
+artifacts/
+lib/
+scripts/
+.local/
+.config/
+.upm/
+.agents/
+
+# Replit config files
+.replit
+replit.nix
+pnpm-lock.yaml
+pnpm-workspace.yaml
+tsconfig*.json
+package.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp files
+.gitignore-clareo
+.gitignore-tmp

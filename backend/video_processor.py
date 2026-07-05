@@ -1,11 +1,11 @@
 """
-Core video processing pipeline:
+Clareo – Core video processing pipeline
 1. Download video with yt-dlp
-2. Extract audio
-3. Transcribe with Whisper
+2. Extract audio (WAV 16kHz mono)
+3. Transcribe with Whisper (word-level timestamps)
 4. Detect volume peaks
 5. Score segments by keywords + volume
-6. Cut best clips, convert 9:16, burn subtitles
+6. Cut best clips, convert to 9:16, burn karaoke-style ASS subtitles
 """
 
 import os
@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Callable, Optional
+
 import yt_dlp
 import whisper
 import numpy as np
@@ -36,11 +37,10 @@ def download_video(url: str, output_dir: Path) -> tuple[Path, Path]:
 
     ydl_opts = {
         "outtmpl": str(output_dir / "video.%(ext)s"),
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "format": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best",
         "merge_output_format": "mp4",
         "quiet": True,
         "no_warnings": True,
-        "postprocessors": [],
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -50,7 +50,7 @@ def download_video(url: str, output_dir: Path) -> tuple[Path, Path]:
         if actual != video_path and actual.exists():
             actual.rename(video_path)
 
-    # Extract audio as WAV for analysis
+    # Extract audio as 16kHz mono WAV for Whisper
     subprocess.run(
         [
             "ffmpeg", "-y", "-i", str(video_path),
@@ -68,8 +68,8 @@ def download_video(url: str, output_dir: Path) -> tuple[Path, Path]:
 
 def transcribe(audio_path: Path, model_name: str = "small") -> list[dict]:
     """
-    Run Whisper transcription.
-    Returns list of segments: {start, end, text}
+    Run Whisper with word-level timestamps.
+    Returns list of segments: {start, end, text, words: [{word, start, end}]}
     """
     model = whisper.load_model(model_name)
     result = model.transcribe(
@@ -81,11 +81,18 @@ def transcribe(audio_path: Path, model_name: str = "small") -> list[dict]:
 
     segments = []
     for seg in result["segments"]:
+        words = []
+        for w in seg.get("words", []):
+            words.append({
+                "word": w["word"].strip(),
+                "start": w["start"],
+                "end": w["end"],
+            })
         segments.append({
             "start": seg["start"],
             "end": seg["end"],
             "text": seg["text"].strip(),
-            "words": seg.get("words", []),
+            "words": words,
         })
 
     return segments
@@ -95,21 +102,23 @@ def transcribe(audio_path: Path, model_name: str = "small") -> list[dict]:
 
 def compute_volume_envelope(audio_path: Path, frame_duration: float = 0.5) -> list[tuple[float, float]]:
     """
-    Returns list of (timestamp, rms_db) pairs using ffmpeg.
+    Returns list of (timestamp, rms_db) pairs via ffmpeg volumedetect-like approach.
+    Falls back to pydub or uniform if parsing fails.
     """
-    # Use ffmpeg to get audio volume info
     result = subprocess.run(
         [
             "ffmpeg", "-i", str(audio_path),
-            "-af", f"astats=metadata=1:reset={int(frame_duration * 1000)},ametadata=print:key=lavfi.astats.Overall.RMS_level",
+            "-af",
+            f"astats=metadata=1:reset={int(frame_duration * 1000)},"
+            "ametadata=print:key=lavfi.astats.Overall.RMS_level",
             "-f", "null", "-",
         ],
         capture_output=True,
         text=True,
     )
 
-    envelope = []
-    time_val = None
+    envelope: list[tuple[float, float]] = []
+    time_val: Optional[float] = None
     for line in result.stderr.split("\n"):
         if "pts_time" in line:
             m = re.search(r"pts_time:([\d.]+)", line)
@@ -123,7 +132,6 @@ def compute_volume_envelope(audio_path: Path, frame_duration: float = 0.5) -> li
                     envelope.append((time_val, rms))
                     time_val = None
 
-    # Fallback: generate uniform envelope using numpy if ffmpeg parsing fails
     if not envelope:
         if HAS_PYDUB:
             audio = AudioSegment.from_wav(str(audio_path))
@@ -131,10 +139,9 @@ def compute_volume_envelope(audio_path: Path, frame_duration: float = 0.5) -> li
             for i, chunk in enumerate(audio[::chunk_ms]):
                 t = i * frame_duration
                 rms = chunk.rms
-                db = 20 * math.log10(max(rms, 1)) - 90  # rough dBFS
+                db = 20 * math.log10(max(rms, 1)) - 90
                 envelope.append((t, db))
         else:
-            # Last resort: all zeros
             duration = get_duration(audio_path)
             steps = int(duration / frame_duration)
             envelope = [(i * frame_duration, -30.0) for i in range(steps)]
@@ -147,11 +154,14 @@ def get_duration(path: Path) -> float:
         ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", str(path)],
         capture_output=True, text=True, check=True,
     )
-    info = json.loads(result.stdout)
-    return float(info["format"]["duration"])
+    return float(json.loads(result.stdout)["format"]["duration"])
 
 
 # ─── Moment Detection ─────────────────────────────────────────────────────────
+
+# Exclamatory / profanity words get 2× weight
+HIGH_WEIGHT_KEYWORDS = {"merda", "porra", "caralho", "caramba", "cacete", "viado"}
+
 
 def score_segments(
     transcript_segments: list[dict],
@@ -159,64 +169,48 @@ def score_segments(
     keywords: list[str],
     video_duration: float,
 ) -> list[dict]:
-    """
-    Score each transcript segment by:
-    - keyword presence (weighted by keyword excitement level)
-    - volume peak relative to baseline
-    Returns segments sorted by score desc.
-    """
+    """Score segments by keyword presence and volume peaks."""
     keywords_lower = [k.lower() for k in keywords]
 
-    # Build volume lookup: time → db
     if volume_envelope:
         vol_times = np.array([t for t, _ in volume_envelope])
-        vol_vals = np.array([v for _, v in volume_envelope])
+        vol_vals  = np.array([v for _, v in volume_envelope])
         baseline_db = float(np.percentile(vol_vals, 40))
     else:
-        vol_times = np.array([0.0])
-        vol_vals = np.array([-30.0])
+        vol_times   = np.array([0.0])
+        vol_vals    = np.array([-30.0])
         baseline_db = -30.0
 
     scored = []
     for seg in transcript_segments:
         text_lower = seg["text"].lower()
-        start = seg["start"]
-        end = seg["end"]
-        duration = end - start
-        if duration < 1.0:
+        start, end = seg["start"], seg["end"]
+        if end - start < 1.0:
             continue
 
-        # Keyword score
         kw_score = 0.0
-        matched_keywords = []
+        matched  = []
         for kw in keywords_lower:
             if kw in text_lower:
-                # Profanity / exclamations get higher weight
-                weight = 2.0 if any(p in kw for p in ["merda", "porra", "caralho", "caramba"]) else 1.0
+                weight = 2.0 if kw in HIGH_WEIGHT_KEYWORDS else 1.0
                 kw_score += weight
-                matched_keywords.append(kw)
+                matched.append(kw)
 
-        # Volume score: avg volume in segment vs baseline
         mask = (vol_times >= start) & (vol_times <= end)
-        if mask.sum() > 0:
-            seg_vol = float(np.mean(vol_vals[mask]))
-            vol_score = max(0.0, seg_vol - baseline_db) / 10.0
-        else:
-            vol_score = 0.0
+        vol_score = float(np.mean(vol_vals[mask]) - baseline_db) / 10.0 if mask.sum() else 0.0
+        vol_score = max(0.0, vol_score)
 
-        total_score = kw_score + vol_score
-
-        reason = []
-        if matched_keywords:
-            reason.append(f"palavras-chave: {', '.join(set(matched_keywords))}")
+        reason_parts = []
+        if matched:
+            unique = list(dict.fromkeys(matched))  # deduplicate, preserve order
+            reason_parts.append(f"palavras-chave: {', '.join(unique)}")
         if vol_score > 0.5:
-            reason.append(f"pico de volume")
+            reason_parts.append("pico de volume")
 
         scored.append({
             **seg,
-            "score": total_score,
-            "reason": " + ".join(reason) if reason else "momento relevante",
-            "matched_keywords": matched_keywords,
+            "score": kw_score + vol_score,
+            "reason": " + ".join(reason_parts) if reason_parts else "momento relevante",
             "vol_score": vol_score,
         })
 
@@ -230,139 +224,157 @@ def merge_and_extend_segments(
     max_duration: float,
     max_clips: int,
 ) -> list[dict]:
-    """
-    Pick top segments, extend them to min_duration, cap at max_duration,
-    and de-overlap.
-    """
-    selected = []
-    used_ranges = []
+    """Pick top segments, extend to min_duration, cap at max_duration, de-overlap."""
+    selected: list[dict] = []
+    used_ranges: list[tuple[float, float]] = []
 
     for seg in scored:
         if len(selected) >= max_clips:
             break
 
-        start = seg["start"]
-        end = seg["end"]
-
-        # Extend to min_duration centered on segment
-        seg_center = (start + end) / 2
-        half = min_duration / 2
-        ext_start = max(0.0, seg_center - half)
-        ext_end = min(video_duration, ext_start + min_duration)
+        center    = (seg["start"] + seg["end"]) / 2
+        ext_start = max(0.0, center - min_duration / 2)
+        ext_end   = min(video_duration, ext_start + min_duration)
         ext_start = max(0.0, ext_end - min_duration)
 
-        # Cap at max_duration
         if ext_end - ext_start > max_duration:
             ext_end = ext_start + max_duration
 
-        # Check overlap
-        overlap = False
-        for us, ue in used_ranges:
-            if not (ext_end <= us or ext_start >= ue):
-                overlap = True
-                break
+        # Skip if overlaps an already-selected clip
+        if any(not (ext_end <= us or ext_start >= ue) for us, ue in used_ranges):
+            continue
 
-        if not overlap:
-            selected.append({
-                **seg,
-                "clip_start": round(ext_start, 2),
-                "clip_end": round(ext_end, 2),
-            })
-            used_ranges.append((ext_start, ext_end))
+        selected.append({**seg, "clip_start": round(ext_start, 2), "clip_end": round(ext_end, 2)})
+        used_ranges.append((ext_start, ext_end))
 
     return selected
 
 
-# ─── Subtitle Generation ──────────────────────────────────────────────────────
+# ─── Karaoke ASS Subtitle Generation ─────────────────────────────────────────
 
-def build_ass_subtitles(transcript_segments: list[dict], clip_start: float, clip_end: float) -> str:
-    """Build ASS subtitle content for a clip window."""
+def _fmt_ass_time(seconds: float) -> str:
+    """Format seconds → ASS time (H:MM:SS.cc)."""
+    seconds = max(0.0, seconds)
+    h  = int(seconds // 3600)
+    m  = int((seconds % 3600) // 60)
+    s  = seconds % 60
+    cs = int((s % 1) * 100)
+    return f"{h}:{m:02d}:{int(s):02d}.{cs:02d}"
 
-    header = """\
-[Script Info]
-ScriptType: v4.00+
-PlayResX: 1080
-PlayResY: 1920
 
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,72,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,60,60,80,1
+def build_karaoke_ass(transcript_segments: list[dict], clip_start: float, clip_end: float) -> str:
+    """
+    Build ASS subtitle content with word-by-word karaoke highlighting.
 
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-    lines = []
+    Style:
+    - Text is white by default (SecondaryColour).
+    - Current word sweeps to teal/cyan (PrimaryColour) using \\kf tags.
+    - Large bold font centred at the lower-third of the 9:16 frame.
+    """
+    # Colours in ASS BGR-alpha format (&HAABBGGRR)
+    # White: &H00FFFFFF   Teal/cyan: &H00DCB400  (BGR of #00B4DC = teal)
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 1080\n"
+        "PlayResY: 1920\n"
+        "\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+        "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        # PrimaryColour=teal  SecondaryColour=white  OutlineColour=black  BackColour=transparent
+        "Style: Karaoke,Arial Black,82,&H00DCB400,&H00FFFFFF,&H00000000,&H00000000,"
+        "-1,0,0,0,100,100,1,0,1,5,2,2,60,60,140,1\n"
+        "\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
 
-    def fmt_time(seconds: float) -> str:
-        seconds = max(0.0, seconds)
-        h = int(seconds // 3600)
-        m = int((seconds % 3600) // 60)
-        s = seconds % 60
-        cs = int((s % 1) * 100)
-        return f"{h}:{m:02d}:{int(s):02d}.{cs:02d}"
+    lines: list[str] = []
 
     for seg in transcript_segments:
+        # Skip segments fully outside the clip window
         if seg["end"] < clip_start or seg["start"] > clip_end:
             continue
-        rel_start = max(0.0, seg["start"] - clip_start)
-        rel_end = min(clip_end - clip_start, seg["end"] - clip_start)
-        text = seg["text"].strip().upper()
-        # Line wrap at ~30 chars
-        if len(text) > 30:
-            words = text.split()
-            lines_wrapped = []
-            current = ""
-            for w in words:
-                if len(current) + len(w) + 1 <= 30:
-                    current += (" " if current else "") + w
-                else:
-                    lines_wrapped.append(current)
-                    current = w
-            if current:
-                lines_wrapped.append(current)
-            text = r"\N".join(lines_wrapped)
+
+        words = seg.get("words", [])
+        if not words:
+            # Fallback: treat whole segment as one word
+            words = [{"word": seg["text"].strip(), "start": seg["start"], "end": seg["end"]}]
+
+        # Keep only words that overlap the clip window
+        in_window = [
+            w for w in words
+            if w["end"] > clip_start and w["start"] < clip_end
+        ]
+        if not in_window:
+            continue
+
+        tagged_parts: list[str] = []
+        for w in in_window:
+            # Clamp word boundaries to clip window
+            wstart = max(clip_start, w["start"])
+            wend   = min(clip_end,   w["end"])
+            # Only emit words where clamped duration is positive
+            dur_s  = wend - wstart
+            if dur_s <= 0:
+                continue
+            dur_cs = max(1, int(dur_s * 100))
+            word_text = w["word"].strip().upper()
+            if word_text:
+                tagged_parts.append(f"{{\\kf{dur_cs}}}{word_text}")
+
+        if not tagged_parts:
+            continue
+
+        karaoke_text = " ".join(tagged_parts)
+
+        # Event bounds derived from filtered words, not raw segment
+        ev_start = max(0.0, in_window[0]["start"] - clip_start)
+        ev_end   = min(clip_end - clip_start, in_window[-1]["end"] - clip_start)
+
+        if ev_end <= ev_start:
+            continue
+
         lines.append(
-            f"Dialogue: 0,{fmt_time(rel_start)},{fmt_time(rel_end)},Default,,0,0,0,,{text}"
+            f"Dialogue: 0,{_fmt_ass_time(ev_start)},{_fmt_ass_time(ev_end)},"
+            f"Karaoke,,0,0,0,k,{karaoke_text}"
         )
 
     return header + "\n".join(lines)
 
 
-# ─── FFmpeg Clip + 9:16 + Subtitles ──────────────────────────────────────────
+# ─── FFmpeg: Cut + 9:16 + Subtitles ──────────────────────────────────────────
 
-def cut_clip(
-    video_path: Path,
-    start: float,
-    end: float,
-    output_path: Path,
-    ass_content: str,
-) -> None:
-    """
-    Cut clip, convert to 9:16 (1080x1920), burn ASS subtitles.
-    """
+def cut_clip(video_path: Path, start: float, end: float, output_path: Path, ass_content: str) -> None:
+    """Cut clip, pad/crop to 9:16 (1080×1920), burn karaoke ASS subtitles."""
     ass_path = output_path.with_suffix(".ass")
     ass_path.write_text(ass_content, encoding="utf-8")
 
     duration = end - start
+    # Escape ass path for ffmpeg filter (backslash and colon)
+    ass_esc = str(ass_path).replace("\\", "/").replace(":", "\\:")
 
-    # Escape path for ffmpeg filter
-    ass_escaped = str(ass_path).replace("\\", "/").replace(":", "\\:")
+    vf = (
+        # Scale to fit inside 1080×1920, preserving aspect ratio
+        "scale=iw*min(1080/iw\\,1920/ih):ih*min(1080/iw\\,1920/ih),"
+        # Pad to exact 9:16 with black bars
+        "pad=1080:1920:(1080-iw)/2:(1920-ih)/2:black,"
+        # Burn karaoke subtitles
+        f"ass={ass_esc}"
+    )
 
     cmd = [
         "ffmpeg", "-y",
         "-ss", str(start),
         "-i", str(video_path),
         "-t", str(duration),
-        # Video filter chain: scale + crop/pad to 9:16, then burn subs
-        "-vf",
-        (
-            "scale=iw*min(1080/iw\\,1920/ih):ih*min(1080/iw\\,1920/ih),"
-            "pad=1080:1920:(1080-iw)/2:(1920-ih)/2:black,"
-            f"ass={ass_escaped}"
-        ),
+        "-vf", vf,
         "-c:v", "libx264",
         "-preset", "fast",
-        "-crf", "23",
+        "-crf", "22",
         "-c:a", "aac",
         "-b:a", "128k",
         "-movflags", "+faststart",
@@ -371,9 +383,8 @@ def cut_clip(
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg error: {result.stderr[-1000:]}")
+        raise RuntimeError(f"ffmpeg error:\n{result.stderr[-2000:]}")
 
-    # Cleanup ASS
     try:
         ass_path.unlink()
     except Exception:
@@ -381,6 +392,16 @@ def cut_clip(
 
 
 # ─── Main Pipeline ────────────────────────────────────────────────────────────
+
+DEFAULT_KEYWORDS = [
+    "caramba", "nossa", "meu deus", "incrível", "impossível",
+    "uau", "wow", "que isso", "sério", "mentira",
+    "absurdo", "fantástico", "impressionante", "surreal",
+    "não acredito", "olha isso", "cara", "demais",
+    "puta", "merda", "porra", "caralho", "cacete",
+    "kkkk", "kkk", "hahaha", "rsrs", "kkkkk",
+]
+
 
 def process_video(
     url: str,
@@ -399,59 +420,64 @@ def process_video(
     # 1. Download
     progress(10, "Baixando vídeo...")
     video_path, audio_path = download_video(url, job_dir)
-
     video_duration = get_duration(video_path)
-    progress(25, "Vídeo baixado! Transcrevendo áudio...")
 
     # 2. Transcribe
-    transcript = transcribe(audio_path, model_name="small")
-    progress(55, "Transcrição concluída! Analisando momentos...")
+    progress(26, "Transcrevendo áudio com Whisper...")
+    whisper_model = os.environ.get("WHISPER_MODEL", "small")
+    transcript = transcribe(audio_path, model_name=whisper_model)
 
-    # 3. Volume envelope
+    # 3. Volume analysis
+    progress(56, "Analisando volume e detectando momentos...")
     envelope = compute_volume_envelope(audio_path)
 
     # 4. Score segments
-    scored = score_segments(transcript, envelope, keywords, video_duration)
+    all_keywords = list(dict.fromkeys(keywords + DEFAULT_KEYWORDS))
+    scored = score_segments(transcript, envelope, all_keywords, video_duration)
 
     if not scored:
-        raise RuntimeError("Nenhum momento relevante detectado no vídeo.")
+        raise RuntimeError(
+            "Nenhum segmento de fala detectado. "
+            "Verifique se o vídeo tem áudio em português."
+        )
 
     # 5. Select and extend clips
     clips_meta = merge_and_extend_segments(
         scored, video_duration, min_duration, max_duration, max_clips
     )
 
+    # Fallback: use top scored even with overlap
     if not clips_meta:
-        # Fallback: use top scored regardless of overlap
         clips_meta = scored[:max_clips]
         for c in clips_meta:
             c["clip_start"] = max(0.0, c["start"] - min_duration / 2)
-            c["clip_end"] = min(video_duration, c["clip_start"] + min_duration)
+            c["clip_end"]   = min(video_duration, c["clip_start"] + min_duration)
 
-    # 6. Cut each clip
+    # 6. Cut each clip with karaoke subtitles
     clips_out = []
+    total = max(len(clips_meta), 1)
     for i, clip in enumerate(clips_meta):
         progress(
-            60 + int((i / max(len(clips_meta), 1)) * 35),
-            f"Cortando clipe {i + 1}/{len(clips_meta)}...",
+            62 + int((i / total) * 33),
+            f"Cortando clipe {i + 1}/{total} com legenda karaokê...",
         )
 
-        filename = f"clip_{i + 1:02d}.mp4"
+        filename    = f"clip_{i + 1:02d}.mp4"
         output_path = job_dir / filename
 
-        ass = build_ass_subtitles(transcript, clip["clip_start"], clip["clip_end"])
+        ass = build_karaoke_ass(transcript, clip["clip_start"], clip["clip_end"])
         cut_clip(video_path, clip["clip_start"], clip["clip_end"], output_path, ass)
 
         clips_out.append({
             "filename": filename,
-            "label": f"Clipe {i + 1}",
-            "start": clip["clip_start"],
-            "end": clip["clip_end"],
-            "reason": clip.get("reason", ""),
-            "score": clip.get("score", 0),
+            "label":    f"Clipe {i + 1}",
+            "start":    clip["clip_start"],
+            "end":      clip["clip_end"],
+            "reason":   clip.get("reason", ""),
+            "score":    round(clip.get("score", 0), 2),
         })
 
-    # Cleanup large files to save space
+    # Free disk space
     try:
         audio_path.unlink()
     except Exception:

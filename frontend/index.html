@@ -3,94 +3,205 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ClipAI — Gerador de Clipes</title>
+  <title>Clareo — Clipes Virais com IA</title>
+  <meta name="description" content="Cole o link de qualquer vídeo e receba os melhores momentos em 9:16 com legenda automática." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="bg-glow"></div>
 
-  <div class="container">
-    <!-- Header -->
-    <header>
-      <div class="logo">
-        <span class="logo-icon">✂️</span>
-        <span class="logo-text">Clip<span class="accent">AI</span></span>
-      </div>
-      <p class="tagline">Cole o link, pegue os melhores momentos em 9:16 com legenda.</p>
-    </header>
+  <!-- ── Navbar ─────────────────────────────────── -->
+  <nav class="navbar">
+    <div class="nav-inner">
+      <a href="#" class="brand">
+        <span class="brand-icon">◈</span>
+        <span class="brand-name">Clareo</span>
+      </a>
+      <span class="nav-tagline">Seus melhores momentos, prontos em segundos</span>
+    </div>
+  </nav>
 
-    <!-- Main form card -->
-    <div class="card" id="card-form">
-      <div class="form-group">
-        <label for="video-url">Link do vídeo</label>
-        <div class="input-row">
+  <!-- ── Hero ───────────────────────────────────── -->
+  <section class="hero" id="section-hero">
+    <div class="hero-glow"></div>
+    <div class="hero-inner">
+      <div class="hero-badge">✦ IA + Whisper + ffmpeg</div>
+      <h1 class="hero-title">
+        Transforme qualquer vídeo em<br />
+        <span class="gradient-text">clipes virais em 9:16</span>
+      </h1>
+      <p class="hero-sub">
+        Cole o link. O Clareo encontra os momentos mais impactantes,<br class="br-desktop" />
+        corta, converte e queima a legenda — tudo automático.
+      </p>
+
+      <!-- Main input -->
+      <div class="input-card" id="input-card">
+        <div class="input-group">
+          <div class="input-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+            </svg>
+          </div>
           <input
             type="url"
             id="video-url"
-            placeholder="https://youtube.com/watch?v=... ou TikTok, Instagram..."
+            class="url-input"
+            placeholder="https://youtube.com/watch?v=... ou link do TikTok, Instagram..."
             autocomplete="off"
+            spellcheck="false"
           />
-          <button id="btn-process" onclick="startProcess()">
-            <span id="btn-text">Gerar Clipes</span>
+          <button class="btn-primary" id="btn-go" onclick="startProcess()">
+            <span class="btn-label">Gerar Clipes</span>
+            <span class="btn-arrow">→</span>
           </button>
         </div>
-      </div>
 
-      <!-- Advanced options (collapsible) -->
-      <details class="advanced">
-        <summary>Opções avançadas</summary>
-        <div class="advanced-grid">
-          <div class="form-group">
-            <label for="keywords">Palavras-chave extras (separadas por vírgula)</label>
-            <input type="text" id="keywords" placeholder="ex: incrível, que loucura, não acredito" />
-          </div>
-          <div class="form-group">
-            <label for="min-duration">Duração mínima do clipe (segundos)</label>
-            <input type="number" id="min-duration" value="20" min="5" max="120" />
-          </div>
-          <div class="form-group">
-            <label for="max-duration">Duração máxima do clipe (segundos)</label>
-            <input type="number" id="max-duration" value="60" min="10" max="180" />
-          </div>
-          <div class="form-group">
-            <label for="max-clips">Máx. de clipes</label>
-            <input type="number" id="max-clips" value="5" min="1" max="10" />
-          </div>
+        <!-- Options row -->
+        <div class="options-row">
+          <label class="opt-label">
+            Duração:
+            <select id="min-duration">
+              <option value="15">15s mín.</option>
+              <option value="20" selected>20s mín.</option>
+              <option value="30">30s mín.</option>
+              <option value="45">45s mín.</option>
+            </select>
+            a
+            <select id="max-duration">
+              <option value="30">30s máx.</option>
+              <option value="60" selected>60s máx.</option>
+              <option value="90">90s máx.</option>
+            </select>
+          </label>
+
+          <label class="opt-label">
+            Clipes:
+            <select id="max-clips">
+              <option value="3">3</option>
+              <option value="5" selected>5</option>
+              <option value="8">8</option>
+              <option value="10">10</option>
+            </select>
+          </label>
+
+          <button class="btn-link" onclick="toggleKeywords()">+ Palavras-chave</button>
         </div>
-      </details>
+
+        <!-- Keywords (hidden by default) -->
+        <div id="keywords-row" class="keywords-row" style="display:none">
+          <input
+            type="text"
+            id="keywords"
+            placeholder="ex: incrível, que loucura, meu deus — separados por vírgula"
+            class="kw-input"
+          />
+        </div>
+
+        <p class="input-hint">Funciona com YouTube, TikTok, Instagram, Twitch e +1000 plataformas</p>
+      </div>
     </div>
 
-    <!-- Progress card -->
-    <div class="card card-progress" id="card-progress" style="display:none">
-      <div class="progress-header">
-        <span class="spinner"></span>
-        <span id="progress-msg">Processando...</span>
+    <!-- How it works -->
+    <div class="steps" id="steps">
+      <div class="step">
+        <div class="step-num">01</div>
+        <div class="step-icon">⬇</div>
+        <div class="step-text">
+          <strong>Download</strong>
+          <span>Baixamos o vídeo com yt-dlp</span>
+        </div>
       </div>
-      <div class="progress-bar-bg">
-        <div class="progress-bar-fill" id="progress-bar" style="width:0%"></div>
+      <div class="step-divider"></div>
+      <div class="step">
+        <div class="step-num">02</div>
+        <div class="step-icon">◎</div>
+        <div class="step-text">
+          <strong>Transcrição</strong>
+          <span>Whisper detecta cada palavra em PT</span>
+        </div>
       </div>
-      <p class="progress-pct" id="progress-pct">0%</p>
-      <button class="btn-secondary" onclick="cancelProcess()">Cancelar</button>
+      <div class="step-divider"></div>
+      <div class="step">
+        <div class="step-num">03</div>
+        <div class="step-icon">✦</div>
+        <div class="step-text">
+          <strong>Detecção</strong>
+          <span>Volume + palavras-chave = melhores momentos</span>
+        </div>
+      </div>
+      <div class="step-divider"></div>
+      <div class="step">
+        <div class="step-num">04</div>
+        <div class="step-icon">▣</div>
+        <div class="step-text">
+          <strong>Clipes prontos</strong>
+          <span>9:16, legendas karaokê queimadas</span>
+        </div>
+      </div>
     </div>
+  </section>
 
-    <!-- Results card -->
-    <div class="card card-results" id="card-results" style="display:none">
+  <!-- ── Processing view ────────────────────────── -->
+  <section class="processing-view" id="section-processing" style="display:none">
+    <div class="proc-card">
+      <div class="proc-anim">
+        <div class="proc-ring"></div>
+        <div class="proc-ring proc-ring-2"></div>
+        <span class="proc-icon">◈</span>
+      </div>
+      <h2 id="proc-msg">Iniciando...</h2>
+      <div class="proc-bar-wrap">
+        <div class="proc-bar" id="proc-bar" style="width:0%"></div>
+      </div>
+      <p class="proc-pct" id="proc-pct">0%</p>
+      <div class="proc-steps-list" id="proc-steps-list">
+        <div class="proc-step-item" id="psi-download">⬇ Baixando vídeo</div>
+        <div class="proc-step-item" id="psi-transcribe">◎ Transcrevendo com Whisper</div>
+        <div class="proc-step-item" id="psi-detect">✦ Detectando melhores momentos</div>
+        <div class="proc-step-item" id="psi-cut">✂ Cortando e gerando legendas</div>
+      </div>
+      <button class="btn-ghost" onclick="cancelProcess()">Cancelar</button>
+    </div>
+  </section>
+
+  <!-- ── Results view ───────────────────────────── -->
+  <section class="results-view" id="section-results" style="display:none">
+    <div class="results-inner">
       <div class="results-header">
-        <span class="check-icon">✅</span>
-        <h2 id="results-title">Clipes prontos!</h2>
+        <div>
+          <h2 class="results-title" id="results-title">Clipes prontos ✓</h2>
+          <p class="results-sub" id="results-sub">Baixe os clipes abaixo — formato 9:16 com legenda queimada</p>
+        </div>
+        <button class="btn-outline" onclick="reset()">
+          ← Processar outro
+        </button>
       </div>
-      <div id="clips-grid" class="clips-grid"></div>
-      <button class="btn-secondary" onclick="reset()">Processar outro vídeo</button>
-    </div>
 
-    <!-- Error card -->
-    <div class="card card-error" id="card-error" style="display:none">
-      <div class="error-icon">⚠️</div>
-      <h2>Algo deu errado</h2>
-      <p id="error-msg">Erro desconhecido</p>
-      <button onclick="reset()">Tentar novamente</button>
+      <div class="clips-grid" id="clips-grid"></div>
     </div>
-  </div>
+  </section>
+
+  <!-- ── Error view ─────────────────────────────── -->
+  <section class="error-view" id="section-error" style="display:none">
+    <div class="error-card">
+      <div class="error-icon">⚠</div>
+      <h2>Algo deu errado</h2>
+      <p id="error-msg">Erro desconhecido. Verifique o link e tente novamente.</p>
+      <button class="btn-primary" onclick="reset()">Tentar novamente</button>
+    </div>
+  </section>
+
+  <!-- ── Footer ─────────────────────────────────── -->
+  <footer class="footer">
+    <div class="footer-inner">
+      <span class="brand">◈ Clareo</span>
+      <span class="footer-text">Powered by Whisper · yt-dlp · ffmpeg</span>
+    </div>
+  </footer>
 
   <script src="script.js"></script>
 </body>
