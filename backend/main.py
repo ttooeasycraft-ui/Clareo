@@ -9,7 +9,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 
-from video_processor import process_video
+# NOTE: video_processor is NOT imported at the top level on purpose.
+# Importing it triggers `import whisper` → `import torch`, which can take
+# 30–120 s and blocks uvicorn from serving any request during that time —
+# causing Railway's healthcheck to time out. We import lazily inside the
+# background task instead, so the server is ready instantly.
 
 app = FastAPI(title="Video Clip Generator")
 
@@ -147,6 +151,10 @@ async def run_processing(
         jobs[job_id].update({"status": status, "progress": progress, "message": message})
 
     try:
+        # Lazy import: torch/whisper initialise here (inside the thread pool),
+        # not at server startup, so the healthcheck endpoint stays responsive.
+        from video_processor import process_video  # noqa: PLC0415
+
         update("running", 5, "Baixando vídeo...")
         clips = await asyncio.to_thread(
             process_video,
