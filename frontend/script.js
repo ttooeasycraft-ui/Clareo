@@ -1,7 +1,7 @@
 // ─── Config ────────────────────────────────────────────────────────────────
 // IMPORTANT: Replace with your Railway backend URL after deploy.
 // Example: "https://clareo-backend.up.railway.app"
-const BACKEND_URL = window.BACKEND_URL || "https://YOUR-RAILWAY-BACKEND.up.railway.app";
+const BACKEND_URL = window.BACKEND_URL || "https://clareo-production-c030.up.railway.app";
 
 // ─── State ─────────────────────────────────────────────────────────────────
 let currentJobId = null;
@@ -195,7 +195,22 @@ function showResults(clips) {
     sizeBadge.className = "clip-badge";
     sizeBadge.textContent = `9:16 · ${duration}s`;
 
-    preview.append(previewIcon, numBadge, sizeBadge);
+    // Viral score badge (like opus.pro) — derived from clip score or estimated
+    const scoreBadge = document.createElement("div");
+    scoreBadge.className = "clip-score";
+    const scoreLabel = document.createElement("span");
+    scoreLabel.className = "clip-score-label";
+    scoreLabel.textContent = "SCORE";
+    const scoreValue = document.createElement("span");
+    scoreValue.className = "clip-score-value";
+    // Use backend score if available, else estimate from index (best clips first)
+    const rawScore = clip.score != null
+      ? Math.min(99, Math.round(50 + clip.score * 49))
+      : Math.max(70, 97 - i * 4);
+    scoreValue.textContent = rawScore;
+    scoreBadge.append(scoreLabel, scoreValue);
+
+    preview.append(previewIcon, numBadge, sizeBadge, scoreBadge);
 
     // Body
     const body = document.createElement("div");
@@ -273,25 +288,10 @@ function shake(id) {
   setTimeout(() => el.style.animation = "", 400);
 }
 
-// ─── Check backend config ────────────────────────────────────────────────────
+// ─── Init ────────────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
-  if (BACKEND_URL.includes("YOUR-RAILWAY-BACKEND")) {
-    const hint = document.createElement("p");
-    hint.style.cssText = `
-      background: rgba(255,107,74,0.08);
-      border: 1px solid rgba(255,107,74,0.25);
-      border-radius: 8px;
-      color: #ff6b4a;
-      font-size: 0.8rem;
-      padding: 10px 14px;
-      margin-top: 10px;
-    `;
-    hint.innerHTML = `
-      ⚠ <strong>Configuração necessária:</strong> edite <code>script.js</code>
-      e substitua <code>YOUR-RAILWAY-BACKEND</code> pela URL do deploy no Railway.
-    `;
-    document.getElementById("input-card")?.appendChild(hint);
-  }
+  // Focus input on load for faster UX
+  document.getElementById("video-url")?.focus();
 });
 
 // CSS keyframe injection for shake
