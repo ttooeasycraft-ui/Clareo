@@ -1,45 +1,48 @@
-# [Project name]
+# ClipAI — Gerador de Clipes Virais
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Recebe um link de vídeo, detecta os melhores momentos automaticamente (picos de volume + palavras-chave), e gera clipes em 9:16 com legenda queimada — prontos para Reels/Shorts.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- Backend Python: `cd backend && uvicorn main:app --reload --port 8000`
+- Frontend: abra `frontend/index.html` no navegador ou `cd frontend && npx serve .`
+- Deploy backend: Railway via `backend/Dockerfile`
+- Deploy frontend: GitHub Pages apontando para `frontend/`
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- **Backend:** Python 3.11, FastAPI, Uvicorn
+- **Download:** yt-dlp (YouTube, TikTok, Instagram, etc.)
+- **Transcrição:** openai-whisper (roda local, sem API key, em português)
+- **Análise de áudio:** ffmpeg, pydub
+- **Edição de vídeo:** ffmpeg (corte, padding 9:16, legendas ASS queimadas)
+- **Frontend:** HTML/CSS/JS puro (sem framework, vai para GitHub Pages)
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `backend/main.py` — FastAPI app, endpoints REST, gerenciamento de jobs em memória
+- `backend/video_processor.py` — pipeline completo: download → transcrição → scoring → corte
+- `backend/Dockerfile` — imagem para deploy no Railway
+- `backend/railway.toml` — configuração do Railway
+- `frontend/index.html` — UI principal
+- `frontend/script.js` — lógica de fetch, polling e download (configure `BACKEND_URL` aqui)
+- `frontend/style.css` — design dark mode
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
-
-## Product
-
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Jobs armazenados em memória (dict) + arquivos em `backend/jobs/{job_id}/` — simples e sem dependência de banco. Em caso de restart do servidor, jobs anteriores são perdidos.
+- Whisper roda localmente dentro do container Railway — sem custo de API, mas requer RAM (modelo `small` usa ~2 GB).
+- Subtítulos em formato ASS para suportar quebra de linha customizada e estilo bold/uppercase.
+- CORS aberto (`allow_origins=["*"]`) para compatibilidade com GitHub Pages.
+- Processamento assíncrono: POST retorna `job_id` imediatamente, frontend faz polling a cada 2s.
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+_Populate as you build._
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
-
-## Pointers
-
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- Sempre configurar `BACKEND_URL` em `frontend/script.js` antes de fazer deploy no GitHub Pages.
+- Railway precisa de pelo menos 2 GB de RAM para o modelo Whisper `small`. Plano gratuito pode não ser suficiente para vídeos longos.
+- ffmpeg deve estar instalado no sistema — o Dockerfile já inclui isso.
+- yt-dlp precisa ser atualizado periodicamente (`pip install -U yt-dlp`) pois sites mudam seus formatos.
