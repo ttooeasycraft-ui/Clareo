@@ -13,6 +13,9 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
+# Install build tools first (openai-whisper needs pkg_resources at build time)
+RUN pip install --no-cache-dir setuptools wheel
+
 # Install Python deps (copy from backend/ sub-path)
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
