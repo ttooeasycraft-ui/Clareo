@@ -1,6 +1,8 @@
 import os
 import uuid
+import time
 import asyncio
+import shutil
 import json
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, BackgroundTasks
@@ -28,7 +30,25 @@ app.add_middleware(
 JOBS_DIR = Path("jobs")
 JOBS_DIR.mkdir(exist_ok=True)
 
+# NOTE: jobs dict is in-process memory only. A Railway redeploy/crash/sleep
+# will wipe all running jobs and the frontend will receive 404 on /status.
+# For persistence across restarts a Redis or DB store would be needed.
 jobs: dict[str, dict] = {}
+
+# How long to keep finished/errored job directories on disk (seconds).
+JOB_TTL = int(os.environ.get("JOB_TTL_SECONDS", "3600"))  # default 1 h
+
+
+def _cleanup_old_jobs() -> None:
+    """Delete job dirs older than JOB_TTL and purge them from the jobs dict."""
+    cutoff = time.time() - JOB_TTL
+    for job_dir in JOBS_DIR.iterdir():
+        try:
+            if job_dir.is_dir() and job_dir.stat().st_mtime < cutoff:
+                shutil.rmtree(job_dir, ignore_errors=True)
+                jobs.pop(job_dir.name, None)
+        except Exception:
+            pass
 
 
 class ProcessRequest(BaseModel):
@@ -37,10 +57,6 @@ class ProcessRequest(BaseModel):
     min_clip_duration: Optional[float] = 20.0
     max_clip_duration: Optional[float] = 60.0
     max_clips: Optional[int] = 5
-
-    @classmethod
-    def model_post_init(cls, __context):
-        pass
 
     def model_post_init(self, __context):
         if self.min_clip_duration is not None and self.min_clip_duration <= 0:
@@ -151,7 +167,11 @@ async def run_processing(
         jobs[job_id].update({"status": status, "progress": progress, "message": message})
 
     try:
-        # Lazy import: torch/whisper initialise here (inside the thread pool),
+        # Opportunistic cleanup: purge job dirs older than JOB_TTL so disk
+        # doesn't fill up on Railway. Runs at the start of every new job.
+        _cleanup_old_jobs()
+
+        # Lazy import: faster_whisper initialises here (inside the thread pool),
         # not at server startup, so the healthcheck endpoint stays responsive.
         from video_processor import process_video  # noqa: PLC0415
 

@@ -35,13 +35,18 @@ def download_video(url: str, output_dir: Path) -> tuple[Path, Path]:
 
     Format selector is deliberately permissive so YouTube Lives (webm/opus)
     and regular videos (mp4/m4a) both work.  ffmpeg re-muxes everything to mp4.
+
+    Bot-detection bypass strategy (item 1):
+    - extractor_args android+web: avoids sign-in prompts on public videos
+    - YTDLP_COOKIES env var: paste your cookies.txt content in Railway Variables;
+      the file is written to a temp path and cleaned up after download.
     """
     video_path = output_dir / "video.mp4"
     audio_path = output_dir / "audio.wav"
 
     ydl_opts = {
         "outtmpl": str(output_dir / "video.%(ext)s"),
-        # Try best ≤1080p with any container/codec; fall back to absolute best.
+        # Try best ≤1080p with any codec; fall back to absolute best.
         # Never restrict by ext= so Lives (webm) and normal videos both match.
         "format": (
             "bestvideo[height<=1080]+bestaudio"
@@ -49,17 +54,32 @@ def download_video(url: str, output_dir: Path) -> tuple[Path, Path]:
             "/best[height<=1080]"
             "/best"
         ),
-        "merge_output_format": "mp4",   # ffmpeg re-muxes to mp4 regardless
+        "merge_output_format": "mp4",
         "quiet": True,
         "no_warnings": True,
+        # Android client bypasses bot-detection on most public videos
+        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
     }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        ext = info.get("ext", "mp4")
-        actual = output_dir / f"video.{ext}"
-        if actual != video_path and actual.exists():
-            actual.rename(video_path)
+    # Optional cookies: set YTDLP_COOKIES env var in Railway to the full
+    # contents of a Netscape-format cookies.txt exported from your browser.
+    cookies_content = os.environ.get("YTDLP_COOKIES", "").strip()
+    cookies_tmp: Optional[Path] = None
+    if cookies_content:
+        cookies_tmp = Path(tempfile.mktemp(suffix=".txt", prefix="yt_cookies_"))
+        cookies_tmp.write_text(cookies_content)
+        ydl_opts["cookiefile"] = str(cookies_tmp)
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            ext = info.get("ext", "mp4")
+            actual = output_dir / f"video.{ext}"
+            if actual != video_path and actual.exists():
+                actual.rename(video_path)
+    finally:
+        if cookies_tmp and cookies_tmp.exists():
+            cookies_tmp.unlink(missing_ok=True)
 
     # If still not .mp4 (edge case), re-mux with ffmpeg
     if not video_path.exists():
@@ -68,7 +88,7 @@ def download_video(url: str, output_dir: Path) -> tuple[Path, Path]:
             src = candidates[0]
             subprocess.run(
                 ["ffmpeg", "-y", "-i", str(src), "-c", "copy", str(video_path)],
-                check=True, capture_output=True,
+                check=True, capture_output=True, timeout=300,
             )
             src.unlink(missing_ok=True)
 
@@ -81,6 +101,7 @@ def download_video(url: str, output_dir: Path) -> tuple[Path, Path]:
         ],
         check=True,
         capture_output=True,
+        timeout=300,
     )
 
     return video_path, audio_path
@@ -139,6 +160,7 @@ def compute_volume_envelope(audio_path: Path, frame_duration: float = 0.5) -> li
         ],
         capture_output=True,
         text=True,
+        timeout=300,
     )
 
     envelope: list[tuple[float, float]] = []
@@ -176,7 +198,7 @@ def compute_volume_envelope(audio_path: Path, frame_duration: float = 0.5) -> li
 def get_duration(path: Path) -> float:
     result = subprocess.run(
         ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", str(path)],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, check=True, timeout=30,
     )
     return float(json.loads(result.stdout)["format"]["duration"])
 
@@ -405,7 +427,7 @@ def cut_clip(video_path: Path, start: float, end: float, output_path: Path, ass_
         str(output_path),
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg error:\n{result.stderr[-2000:]}")
 
@@ -445,6 +467,18 @@ def process_video(
     progress(10, "Baixando vídeo...")
     video_path, audio_path = download_video(url, job_dir)
     video_duration = get_duration(video_path)
+
+    # Guard: reject videos longer than MAX_VIDEO_DURATION (default 2 h).
+    # A 3 h+ live would exhaust RAM/disk on Railway's free tier.
+    max_secs = float(os.environ.get("MAX_VIDEO_DURATION", "7200"))
+    if video_duration > max_secs:
+        video_path.unlink(missing_ok=True)
+        audio_path.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Vídeo muito longo ({video_duration / 3600:.1f} h). "
+            f"O limite é {max_secs / 3600:.0f} h. "
+            "Corte um trecho menor e tente novamente."
+        )
 
     # 2. Transcribe
     progress(26, "Transcrevendo áudio com Whisper...")
@@ -501,10 +535,12 @@ def process_video(
             "score":    round(clip.get("score", 0), 2),
         })
 
-    # Free disk space
-    try:
-        audio_path.unlink()
-    except Exception:
-        pass
+    # Free disk space — remove source video AND audio after clips are cut.
+    # Leaving video.mp4 would fill Railway's ephemeral disk over time.
+    for tmp in (video_path, audio_path):
+        try:
+            tmp.unlink()
+        except Exception:
+            pass
 
     return clips_out
