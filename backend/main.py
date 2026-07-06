@@ -40,11 +40,21 @@ JOB_TTL = int(os.environ.get("JOB_TTL_SECONDS", "3600"))  # default 1 h
 
 
 def _cleanup_old_jobs() -> None:
-    """Delete job dirs older than JOB_TTL and purge them from the jobs dict."""
+    """Delete job dirs older than JOB_TTL and purge them from the jobs dict.
+
+    Never removes jobs that are still queued or running — their mtime is old
+    from creation but they are still being actively processed.
+    """
     cutoff = time.time() - JOB_TTL
     for job_dir in JOBS_DIR.iterdir():
         try:
-            if job_dir.is_dir() and job_dir.stat().st_mtime < cutoff:
+            if not job_dir.is_dir():
+                continue
+            # Skip active jobs regardless of age
+            status = jobs.get(job_dir.name, {}).get("status", "")
+            if status in ("queued", "running"):
+                continue
+            if job_dir.stat().st_mtime < cutoff:
                 shutil.rmtree(job_dir, ignore_errors=True)
                 jobs.pop(job_dir.name, None)
         except Exception:

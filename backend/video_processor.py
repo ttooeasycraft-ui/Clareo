@@ -64,11 +64,17 @@ def download_video(url: str, output_dir: Path) -> tuple[Path, Path]:
     # Optional cookies: set YTDLP_COOKIES env var in Railway to the full
     # contents of a Netscape-format cookies.txt exported from your browser.
     cookies_content = os.environ.get("YTDLP_COOKIES", "").strip()
-    cookies_tmp: Optional[Path] = None
+    cookies_fd: Optional[int] = None
+    cookies_tmp_path: Optional[str] = None
     if cookies_content:
-        cookies_tmp = Path(tempfile.mktemp(suffix=".txt", prefix="yt_cookies_"))
-        cookies_tmp.write_text(cookies_content)
-        ydl_opts["cookiefile"] = str(cookies_tmp)
+        # mkstemp is atomic — no TOCTOU race unlike mktemp()
+        cookies_fd, cookies_tmp_path = tempfile.mkstemp(suffix=".txt", prefix="yt_cookies_")
+        try:
+            os.write(cookies_fd, cookies_content.encode())
+        finally:
+            os.close(cookies_fd)
+        os.chmod(cookies_tmp_path, 0o600)  # restrict to owner only
+        ydl_opts["cookiefile"] = cookies_tmp_path
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -78,8 +84,11 @@ def download_video(url: str, output_dir: Path) -> tuple[Path, Path]:
             if actual != video_path and actual.exists():
                 actual.rename(video_path)
     finally:
-        if cookies_tmp and cookies_tmp.exists():
-            cookies_tmp.unlink(missing_ok=True)
+        if cookies_tmp_path:
+            try:
+                os.unlink(cookies_tmp_path)
+            except Exception:
+                pass
 
     # If still not .mp4 (edge case), re-mux with ffmpeg
     if not video_path.exists():
@@ -92,7 +101,8 @@ def download_video(url: str, output_dir: Path) -> tuple[Path, Path]:
             )
             src.unlink(missing_ok=True)
 
-    # Extract audio as 16kHz mono WAV for Whisper
+    # Extract audio as 16kHz mono WAV for Whisper.
+    # Timeout 600s: a 2 h video on Railway's constrained CPU can take several minutes.
     subprocess.run(
         [
             "ffmpeg", "-y", "-i", str(video_path),
@@ -101,7 +111,7 @@ def download_video(url: str, output_dir: Path) -> tuple[Path, Path]:
         ],
         check=True,
         capture_output=True,
-        timeout=300,
+        timeout=600,
     )
 
     return video_path, audio_path
@@ -160,7 +170,7 @@ def compute_volume_envelope(audio_path: Path, frame_duration: float = 0.5) -> li
         ],
         capture_output=True,
         text=True,
-        timeout=300,
+        timeout=600,  # 2 h video on slow CPU can take a while
     )
 
     envelope: list[tuple[float, float]] = []
@@ -463,14 +473,38 @@ def process_video(
         if progress_callback:
             progress_callback(p, msg)
 
+    max_secs = float(os.environ.get("MAX_VIDEO_DURATION", "7200"))
+
+    # Pre-flight duration check — avoids downloading a 3 h+ live only to
+    # reject it. Uses yt-dlp metadata (no download). If duration is unknown
+    # (some live streams don't expose it), we skip and check after download.
+    progress(5, "Verificando duração do vídeo...")
+    _preflight_base_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+    }
+    try:
+        with yt_dlp.YoutubeDL(_preflight_base_opts) as _ydl:
+            _info_pre = _ydl.extract_info(url, download=False)
+            _pre_dur = _info_pre.get("duration")
+            if _pre_dur and float(_pre_dur) > max_secs:
+                raise RuntimeError(
+                    f"Vídeo muito longo ({float(_pre_dur) / 3600:.1f} h). "
+                    f"O limite é {max_secs / 3600:.0f} h. "
+                    "Corte um trecho menor e tente novamente."
+                )
+    except RuntimeError:
+        raise
+    except Exception:
+        pass  # metadata unavailable — proceed and check after download
+
     # 1. Download
     progress(10, "Baixando vídeo...")
     video_path, audio_path = download_video(url, job_dir)
     video_duration = get_duration(video_path)
 
-    # Guard: reject videos longer than MAX_VIDEO_DURATION (default 2 h).
-    # A 3 h+ live would exhaust RAM/disk on Railway's free tier.
-    max_secs = float(os.environ.get("MAX_VIDEO_DURATION", "7200"))
+    # Post-download guard (safety net for cases where pre-flight was skipped).
     if video_duration > max_secs:
         video_path.unlink(missing_ok=True)
         audio_path.unlink(missing_ok=True)
