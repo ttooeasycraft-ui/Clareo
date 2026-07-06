@@ -31,14 +31,25 @@ except ImportError:
 # ─── Download ────────────────────────────────────────────────────────────────
 
 def download_video(url: str, output_dir: Path) -> tuple[Path, Path]:
-    """Download video and return (video_path, audio_path)."""
+    """Download video and return (video_path, audio_path).
+
+    Format selector is deliberately permissive so YouTube Lives (webm/opus)
+    and regular videos (mp4/m4a) both work.  ffmpeg re-muxes everything to mp4.
+    """
     video_path = output_dir / "video.mp4"
     audio_path = output_dir / "audio.wav"
 
     ydl_opts = {
         "outtmpl": str(output_dir / "video.%(ext)s"),
-        "format": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best",
-        "merge_output_format": "mp4",
+        # Try best ≤1080p with any container/codec; fall back to absolute best.
+        # Never restrict by ext= so Lives (webm) and normal videos both match.
+        "format": (
+            "bestvideo[height<=1080]+bestaudio"
+            "/bestvideo[height<=1080]"
+            "/best[height<=1080]"
+            "/best"
+        ),
+        "merge_output_format": "mp4",   # ffmpeg re-muxes to mp4 regardless
         "quiet": True,
         "no_warnings": True,
     }
@@ -49,6 +60,17 @@ def download_video(url: str, output_dir: Path) -> tuple[Path, Path]:
         actual = output_dir / f"video.{ext}"
         if actual != video_path and actual.exists():
             actual.rename(video_path)
+
+    # If still not .mp4 (edge case), re-mux with ffmpeg
+    if not video_path.exists():
+        candidates = list(output_dir.glob("video.*"))
+        if candidates:
+            src = candidates[0]
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", str(src), "-c", "copy", str(video_path)],
+                check=True, capture_output=True,
+            )
+            src.unlink(missing_ok=True)
 
     # Extract audio as 16kHz mono WAV for Whisper
     subprocess.run(
