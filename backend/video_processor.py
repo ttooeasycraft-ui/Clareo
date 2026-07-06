@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import yt_dlp
-import whisper
+from faster_whisper import WhisperModel
 import numpy as np
 
 try:
@@ -68,30 +68,32 @@ def download_video(url: str, output_dir: Path) -> tuple[Path, Path]:
 
 def transcribe(audio_path: Path, model_name: str = "small") -> list[dict]:
     """
-    Run Whisper with word-level timestamps.
+    Run faster-whisper with word-level timestamps.
     Returns list of segments: {start, end, text, words: [{word, start, end}]}
+
+    faster-whisper uses CTranslate2 (not PyTorch) — ~400 MB RAM vs ~2 GB for
+    openai-whisper, installs cleanly, and is 4x faster.
     """
-    model = whisper.load_model(model_name)
-    result = model.transcribe(
+    model = WhisperModel(model_name, device="cpu", compute_type="int8")
+    segments_gen, _info = model.transcribe(
         str(audio_path),
         language="pt",
         word_timestamps=True,
-        verbose=False,
     )
 
     segments = []
-    for seg in result["segments"]:
+    for seg in segments_gen:
         words = []
-        for w in seg.get("words", []):
+        for w in (seg.words or []):
             words.append({
-                "word": w["word"].strip(),
-                "start": w["start"],
-                "end": w["end"],
+                "word": w.word.strip(),
+                "start": w.start,
+                "end": w.end,
             })
         segments.append({
-            "start": seg["start"],
-            "end": seg["end"],
-            "text": seg["text"].strip(),
+            "start": seg.start,
+            "end": seg.end,
+            "text": seg.text.strip(),
             "words": words,
         })
 

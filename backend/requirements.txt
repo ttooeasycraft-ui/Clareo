@@ -3,6 +3,7 @@ uvicorn[standard]==0.32.1
 python-multipart==0.0.12
 pydantic==2.10.3
 yt-dlp==2024.11.18
+faster-whisper==1.1.1
 numpy==1.26.4
 pydub==0.25.1
 ffmpeg-python==0.2.0
