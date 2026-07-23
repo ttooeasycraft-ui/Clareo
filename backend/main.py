@@ -12,16 +12,15 @@ from pydantic import BaseModel
 from typing import Optional
 
 # NOTE: video_processor is NOT imported at the top level on purpose.
-# Importing it triggers `import whisper` → `import torch`, which can take
-# 30–120 s and blocks uvicorn from serving any request during that time —
-# causing Railway's healthcheck to time out. We import lazily inside the
-# background task instead, so the server is ready instantly.
+# Importing it triggers faster_whisper → ctranslate2 init, which can block
+# uvicorn startup long enough for Railway's healthcheck to time out.
+# We import lazily inside the background task instead.
 
 app = FastAPI(title="Video Clip Generator")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],      # public API — no credentials sent
+    allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type", "Accept"],
@@ -30,27 +29,93 @@ app.add_middleware(
 JOBS_DIR = Path("jobs")
 JOBS_DIR.mkdir(exist_ok=True)
 
-# NOTE: jobs dict is in-process memory only. A Railway redeploy/crash/sleep
-# will wipe all running jobs and the frontend will receive 404 on /status.
-# For persistence across restarts a Redis or DB store would be needed.
-jobs: dict[str, dict] = {}
-
 # How long to keep finished/errored job directories on disk (seconds).
 JOB_TTL = int(os.environ.get("JOB_TTL_SECONDS", "3600"))  # default 1 h
 
+# ─── Persistent job state ─────────────────────────────────────────────────────
+# Each job gets a status.json inside its directory.  The in-memory dict is just
+# a cache; every mutation is flushed to disk atomically so a Railway restart
+# never causes a 404 for a job whose clips already exist.
+
+jobs: dict[str, dict] = {}
+
+
+def _status_path(job_id: str) -> Path:
+    return JOBS_DIR / job_id / "status.json"
+
+
+def _save_job(job_id: str, state: dict) -> None:
+    """Atomically write state to jobs/{job_id}/status.json."""
+    path = _status_path(job_id)
+    tmp = path.with_suffix(".json.tmp")
+    try:
+        tmp.write_text(json.dumps(state, ensure_ascii=False))
+        os.replace(tmp, path)          # atomic on POSIX
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _load_job(job_id: str) -> dict | None:
+    """Read state from disk; return None if the file doesn't exist or is corrupt."""
+    path = _status_path(job_id)
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
+
+
+def _set_job(job_id: str, state: dict) -> None:
+    """Update in-memory cache and persist to disk."""
+    jobs[job_id] = state
+    _save_job(job_id, state)
+
+
+def _update_job(job_id: str, **fields) -> None:
+    """Merge fields into current state, then persist."""
+    current = jobs.get(job_id) or _load_job(job_id) or {}
+    current.update(fields)
+    _set_job(job_id, current)
+
+
+def _recover_jobs_from_disk() -> None:
+    """On startup: load every status.json found on disk into the memory cache.
+
+    Jobs that were 'queued' or 'running' when the server died are marked
+    'error' with an explanation — they cannot be resumed, but at least the
+    frontend gets a meaningful response instead of a 404.
+    """
+    for job_dir in JOBS_DIR.iterdir():
+        if not job_dir.is_dir():
+            continue
+        state = _load_job(job_dir.name)
+        if state is None:
+            continue
+        if state.get("status") in ("queued", "running"):
+            state.update({
+                "status": "error",
+                "message": "Servidor reiniciado durante o processamento. Tente novamente.",
+                "error": "server_restart",
+            })
+            _save_job(job_dir.name, state)
+        jobs[job_dir.name] = state
+
+
+# Recover on import (runs once when uvicorn loads the app module).
+_recover_jobs_from_disk()
+
+
+# ─── Cleanup ──────────────────────────────────────────────────────────────────
 
 def _cleanup_old_jobs() -> None:
-    """Delete job dirs older than JOB_TTL and purge them from the jobs dict.
-
-    Never removes jobs that are still queued or running — their mtime is old
-    from creation but they are still being actively processed.
-    """
+    """Delete job dirs older than JOB_TTL. Skips actively running jobs."""
     cutoff = time.time() - JOB_TTL
     for job_dir in JOBS_DIR.iterdir():
         try:
             if not job_dir.is_dir():
                 continue
-            # Skip active jobs regardless of age
             status = jobs.get(job_dir.name, {}).get("status", "")
             if status in ("queued", "running"):
                 continue
@@ -60,6 +125,8 @@ def _cleanup_old_jobs() -> None:
         except Exception:
             pass
 
+
+# ─── Request model ────────────────────────────────────────────────────────────
 
 class ProcessRequest(BaseModel):
     url: str
@@ -83,6 +150,8 @@ class ProcessRequest(BaseModel):
             raise ValueError("max_clips deve estar entre 1 e 10")
 
 
+# ─── Routes ───────────────────────────────────────────────────────────────────
+
 @app.get("/")
 def root():
     return {"status": "ok", "message": "Video Clip Generator API"}
@@ -94,13 +163,13 @@ async def start_processing(req: ProcessRequest, background_tasks: BackgroundTask
     job_dir = JOBS_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    jobs[job_id] = {
+    _set_job(job_id, {
         "status": "queued",
         "progress": 0,
         "message": "Na fila...",
         "clips": [],
         "error": None,
-    }
+    })
 
     background_tasks.add_task(
         run_processing,
@@ -118,17 +187,23 @@ async def start_processing(req: ProcessRequest, background_tasks: BackgroundTask
 
 @app.get("/status/{job_id}")
 def get_status(job_id: str):
-    if job_id not in jobs:
+    # Check memory cache first; fall back to disk for post-restart lookups.
+    state = jobs.get(job_id) or _load_job(job_id)
+    if state is None:
         raise HTTPException(status_code=404, detail="Job não encontrado")
-    return jobs[job_id]
+    # Warm the cache so next poll is instant.
+    if job_id not in jobs:
+        jobs[job_id] = state
+    return state
 
 
 @app.get("/download/{job_id}/{filename}")
 def download_clip(job_id: str, filename: str):
-    if job_id not in jobs:
+    # Accept both cached and disk-recovered jobs.
+    state = jobs.get(job_id) or _load_job(job_id)
+    if state is None:
         raise HTTPException(status_code=404, detail="Job não encontrado")
 
-    # Sanitize: strip any path components to prevent traversal
     safe_filename = Path(filename).name
     if not safe_filename or safe_filename != filename:
         raise HTTPException(status_code=400, detail="Nome de arquivo inválido")
@@ -136,7 +211,6 @@ def download_clip(job_id: str, filename: str):
     job_dir = JOBS_DIR / job_id
     clip_path = job_dir / safe_filename
 
-    # Ensure resolved path is still inside the job directory
     try:
         clip_path.resolve().relative_to(job_dir.resolve())
     except ValueError:
@@ -153,6 +227,8 @@ def download_clip(job_id: str, filename: str):
     )
 
 
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
 def default_keywords() -> list[str]:
     return [
         "caramba", "nossa", "meu deus", "incrível", "impossível",
@@ -164,6 +240,8 @@ def default_keywords() -> list[str]:
     ]
 
 
+# ─── Background task ──────────────────────────────────────────────────────────
+
 async def run_processing(
     job_id: str,
     url: str,
@@ -174,15 +252,11 @@ async def run_processing(
     job_dir: Path,
 ):
     def update(status: str, progress: int, message: str):
-        jobs[job_id].update({"status": status, "progress": progress, "message": message})
+        _update_job(job_id, status=status, progress=progress, message=message)
 
     try:
-        # Opportunistic cleanup: purge job dirs older than JOB_TTL so disk
-        # doesn't fill up on Railway. Runs at the start of every new job.
         _cleanup_old_jobs()
 
-        # Lazy import: faster_whisper initialises here (inside the thread pool),
-        # not at server startup, so the healthcheck endpoint stays responsive.
         from video_processor import process_video  # noqa: PLC0415
 
         update("running", 5, "Baixando vídeo...")
@@ -197,28 +271,29 @@ async def run_processing(
             progress_callback=lambda p, m: update("running", p, m),
         )
 
-        jobs[job_id].update({
-            "status": "done",
-            "progress": 100,
-            "message": f"{len(clips)} clipe(s) prontos!",
-            "clips": [
+        _update_job(job_id,
+            status="done",
+            progress=100,
+            message=f"{len(clips)} clipe(s) prontos!",
+            clips=[
                 {
                     "filename": c["filename"],
                     "label": c["label"],
                     "start": c["start"],
                     "end": c["end"],
                     "reason": c["reason"],
+                    "score": c.get("score", 0),
                 }
                 for c in clips
             ],
-        })
+        )
 
     except Exception as e:
-        jobs[job_id].update({
-            "status": "error",
-            "progress": 0,
-            "message": "Erro durante o processamento",
-            "error": str(e),
-        })
+        _update_job(job_id,
+            status="error",
+            progress=0,
+            message="Erro durante o processamento",
+            error=str(e),
+        )
         import traceback
         traceback.print_exc()
