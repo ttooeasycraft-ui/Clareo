@@ -121,7 +121,8 @@ async function pollStatus() {
       setTimeout(() => showResults(data.clips), 600);
     } else if (status === "error") {
       stopPolling();
-      showError(data.error || data.message || "Erro durante o processamento.");
+      // Prefer human-readable message; fall back to raw error code only as last resort
+      showError(data.message || data.error || "Erro durante o processamento.");
     }
   } catch (e) {
     console.warn("Poll hiccup:", e);
