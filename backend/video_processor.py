@@ -57,8 +57,9 @@ def download_video(url: str, output_dir: Path) -> tuple[Path, Path]:
         "merge_output_format": "mp4",
         "quiet": True,
         "no_warnings": True,
-        # Android client bypasses bot-detection on most public videos
-        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+        # iOS and tv_embedded clients bypass bot-detection without cookies.
+        # Order matters: yt-dlp tries each in sequence, stops at first success.
+        "extractor_args": {"youtube": {"player_client": ["ios", "tv_embedded", "android", "web"]}},
     }
 
     # Optional cookies: set YTDLP_COOKIES env var in Railway to the full
@@ -482,7 +483,7 @@ def process_video(
     _preflight_base_opts = {
         "quiet": True,
         "no_warnings": True,
-        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+        "extractor_args": {"youtube": {"player_client": ["ios", "tv_embedded", "android", "web"]}},
     }
     try:
         with yt_dlp.YoutubeDL(_preflight_base_opts) as _ydl:
