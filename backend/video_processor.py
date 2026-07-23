@@ -470,60 +470,18 @@ DEFAULT_KEYWORDS = [
 ]
 
 
-def process_video(
-    url: str,
+def _run_pipeline(
+    video_path: Path,
+    audio_path: Path,
+    video_duration: float,
     keywords: list[str],
     min_duration: float,
     max_duration: float,
     max_clips: int,
     job_dir: Path,
-    progress_callback: Optional[Callable] = None,
+    progress: Callable,
 ) -> list[dict]:
-
-    def progress(p: int, msg: str):
-        if progress_callback:
-            progress_callback(p, msg)
-
-    max_secs = float(os.environ.get("MAX_VIDEO_DURATION", "7200"))
-
-    # Pre-flight duration check — avoids downloading a 3 h+ live only to
-    # reject it. Uses yt-dlp metadata (no download). If duration is unknown
-    # (some live streams don't expose it), we skip and check after download.
-    progress(5, "Verificando duração do vídeo...")
-    _preflight_base_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "extractor_args": {"youtube": {"player_client": ["ios", "tv_embedded", "android", "web"]}},
-    }
-    try:
-        with yt_dlp.YoutubeDL(_preflight_base_opts) as _ydl:
-            _info_pre = _ydl.extract_info(url, download=False)
-            _pre_dur = _info_pre.get("duration")
-            if _pre_dur and float(_pre_dur) > max_secs:
-                raise RuntimeError(
-                    f"Vídeo muito longo ({float(_pre_dur) / 3600:.1f} h). "
-                    f"O limite é {max_secs / 3600:.0f} h. "
-                    "Corte um trecho menor e tente novamente."
-                )
-    except RuntimeError:
-        raise
-    except Exception:
-        pass  # metadata unavailable — proceed and check after download
-
-    # 1. Download
-    progress(10, "Baixando vídeo...")
-    video_path, audio_path = download_video(url, job_dir)
-    video_duration = get_duration(video_path)
-
-    # Post-download guard (safety net for cases where pre-flight was skipped).
-    if video_duration > max_secs:
-        video_path.unlink(missing_ok=True)
-        audio_path.unlink(missing_ok=True)
-        raise RuntimeError(
-            f"Vídeo muito longo ({video_duration / 3600:.1f} h). "
-            f"O limite é {max_secs / 3600:.0f} h. "
-            "Corte um trecho menor e tente novamente."
-        )
+    """Steps 2-6 shared by URL and file-upload flows."""
 
     # 2. Transcribe
     progress(26, "Transcrevendo áudio com Whisper...")
@@ -549,7 +507,6 @@ def process_video(
         scored, video_duration, min_duration, max_duration, max_clips
     )
 
-    # Fallback: use top scored even with overlap
     if not clips_meta:
         clips_meta = scored[:max_clips]
         for c in clips_meta:
@@ -564,13 +521,10 @@ def process_video(
             62 + int((i / total) * 33),
             f"Cortando clipe {i + 1}/{total} com legenda karaokê...",
         )
-
         filename    = f"clip_{i + 1:02d}.mp4"
         output_path = job_dir / filename
-
         ass = build_karaoke_ass(transcript, clip["clip_start"], clip["clip_end"])
         cut_clip(video_path, clip["clip_start"], clip["clip_end"], output_path, ass)
-
         clips_out.append({
             "filename": filename,
             "label":    f"Clipe {i + 1}",
@@ -580,8 +534,7 @@ def process_video(
             "score":    round(clip.get("score", 0), 2),
         })
 
-    # Free disk space — remove source video AND audio after clips are cut.
-    # Leaving video.mp4 would fill Railway's ephemeral disk over time.
+    # Free disk — remove source video AND audio after clips are cut.
     for tmp in (video_path, audio_path):
         try:
             tmp.unlink()
@@ -589,3 +542,112 @@ def process_video(
             pass
 
     return clips_out
+
+
+def process_video(
+    url: str,
+    keywords: list[str],
+    min_duration: float,
+    max_duration: float,
+    max_clips: int,
+    job_dir: Path,
+    progress_callback: Optional[Callable] = None,
+) -> list[dict]:
+    """URL flow: pre-flight check → yt-dlp download → shared pipeline."""
+
+    def progress(p: int, msg: str):
+        if progress_callback:
+            progress_callback(p, msg)
+
+    max_secs = float(os.environ.get("MAX_VIDEO_DURATION", "7200"))
+
+    # Pre-flight: reject oversized videos before any download.
+    progress(5, "Verificando duração do vídeo...")
+    _preflight_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extractor_args": {"youtube": {"player_client": ["ios", "tv_embedded", "android", "web"]}},
+    }
+    try:
+        with yt_dlp.YoutubeDL(_preflight_opts) as _ydl:
+            _info = _ydl.extract_info(url, download=False)
+            _dur  = _info.get("duration")
+            if _dur and float(_dur) > max_secs:
+                raise RuntimeError(
+                    f"Vídeo muito longo ({float(_dur) / 3600:.1f} h). "
+                    f"O limite é {max_secs / 3600:.0f} h."
+                )
+    except RuntimeError:
+        raise
+    except Exception:
+        pass  # metadata unavailable — proceed, check again after download
+
+    progress(10, "Baixando vídeo...")
+    video_path, audio_path = download_video(url, job_dir)
+    video_duration = get_duration(video_path)
+
+    if video_duration > max_secs:
+        for p in (video_path, audio_path):
+            p.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Vídeo muito longo ({video_duration / 3600:.1f} h). "
+            f"O limite é {max_secs / 3600:.0f} h."
+        )
+
+    return _run_pipeline(
+        video_path, audio_path, video_duration, keywords,
+        min_duration, max_duration, max_clips, job_dir, progress,
+    )
+
+
+def process_uploaded_file(
+    video_path: Path,
+    keywords: list[str],
+    min_duration: float,
+    max_duration: float,
+    max_clips: int,
+    job_dir: Path,
+    progress_callback: Optional[Callable] = None,
+) -> list[dict]:
+    """Upload flow: skip yt-dlp, process a file already on disk."""
+
+    def progress(p: int, msg: str):
+        if progress_callback:
+            progress_callback(p, msg)
+
+    max_secs = float(os.environ.get("MAX_VIDEO_DURATION", "7200"))
+
+    # Re-mux non-mp4 containers (mov, mkv…) to mp4 so ffmpeg pipeline is uniform.
+    mp4_path = job_dir / "video.mp4"
+    if video_path.suffix.lower() != ".mp4" or video_path != mp4_path:
+        progress(8, "Convertendo para mp4...")
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(video_path), "-c", "copy", str(mp4_path)],
+            check=True, capture_output=True, timeout=600,
+        )
+        if video_path != mp4_path:
+            video_path.unlink(missing_ok=True)
+        video_path = mp4_path
+
+    video_duration = get_duration(video_path)
+    if video_duration > max_secs:
+        video_path.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Vídeo muito longo ({video_duration / 3600:.1f} h). "
+            f"O limite é {max_secs / 3600:.0f} h."
+        )
+
+    audio_path = job_dir / "audio.wav"
+    progress(15, "Extraindo áudio...")
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", str(video_path),
+            "-ar", "16000", "-ac", "1", "-vn", str(audio_path),
+        ],
+        check=True, capture_output=True, timeout=600,
+    )
+
+    return _run_pipeline(
+        video_path, audio_path, video_duration, keywords,
+        min_duration, max_duration, max_clips, job_dir, progress,
+    )

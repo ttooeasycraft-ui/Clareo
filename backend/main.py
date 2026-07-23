@@ -5,7 +5,7 @@ import asyncio
 import shutil
 import json
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -197,6 +197,75 @@ def get_status(job_id: str):
     return state
 
 
+@app.post("/upload")
+async def start_upload(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    keywords: Optional[str] = Form(None),
+    min_clip_duration: Optional[float] = Form(20.0),
+    max_clip_duration: Optional[float] = Form(60.0),
+    max_clips: Optional[int] = Form(5),
+):
+    # Validate clip params
+    min_dur = min_clip_duration if min_clip_duration and min_clip_duration > 0 else 20.0
+    max_dur = max_clip_duration if max_clip_duration and max_clip_duration > 0 else 60.0
+    n_clips = max(1, min(10, max_clips or 5))
+    if min_dur > max_dur:
+        raise HTTPException(status_code=422, detail="min_clip_duration não pode ser maior que max_clip_duration")
+
+    # Determine safe extension from content-type or filename
+    content_type = file.content_type or ""
+    ALLOWED_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
+    original_name = Path(file.filename or "upload.mp4").name
+    ext = Path(original_name).suffix.lower()
+    if ext not in ALLOWED_EXTS:
+        ext = ".mp4"
+
+    job_id = str(uuid.uuid4())
+    job_dir = JOBS_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    # Stream uploaded file to disk
+    upload_path = job_dir / f"upload{ext}"
+    try:
+        with open(upload_path, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)  # 1 MB chunks
+                if not chunk:
+                    break
+                out.write(chunk)
+    except Exception as e:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"Falha ao salvar arquivo: {e}")
+
+    kw_list = (
+        [k.strip() for k in keywords.split(",") if k.strip()]
+        if keywords
+        else default_keywords()
+    )
+
+    _set_job(job_id, {
+        "status": "queued",
+        "progress": 0,
+        "message": "Na fila...",
+        "clips": [],
+        "error": None,
+    })
+
+    background_tasks.add_task(
+        run_upload_processing,
+        job_id=job_id,
+        upload_path=upload_path,
+        keywords=kw_list,
+        min_duration=min_dur,
+        max_duration=max_dur,
+        max_clips=n_clips,
+        job_dir=job_dir,
+    )
+
+    return {"job_id": job_id}
+
+
 @app.get("/download/{job_id}/{filename}")
 def download_clip(job_id: str, filename: str):
     # Accept both cached and disk-recovered jobs.
@@ -263,6 +332,63 @@ async def run_processing(
         clips = await asyncio.to_thread(
             process_video,
             url=url,
+            keywords=keywords,
+            min_duration=min_duration,
+            max_duration=max_duration,
+            max_clips=max_clips,
+            job_dir=job_dir,
+            progress_callback=lambda p, m: update("running", p, m),
+        )
+
+        _update_job(job_id,
+            status="done",
+            progress=100,
+            message=f"{len(clips)} clipe(s) prontos!",
+            clips=[
+                {
+                    "filename": c["filename"],
+                    "label": c["label"],
+                    "start": c["start"],
+                    "end": c["end"],
+                    "reason": c["reason"],
+                    "score": c.get("score", 0),
+                }
+                for c in clips
+            ],
+        )
+
+    except Exception as e:
+        _update_job(job_id,
+            status="error",
+            progress=0,
+            message="Erro durante o processamento",
+            error=str(e),
+        )
+        import traceback
+        traceback.print_exc()
+
+
+async def run_upload_processing(
+    job_id: str,
+    upload_path: Path,
+    keywords: list[str],
+    min_duration: float,
+    max_duration: float,
+    max_clips: int,
+    job_dir: Path,
+):
+    def update(status: str, progress: int, message: str):
+        _update_job(job_id, status=status, progress=progress, message=message)
+
+    try:
+        _cleanup_old_jobs()
+
+        from video_processor import process_uploaded_file  # noqa: PLC0415
+
+        update("running", 5, "Processando arquivo...")
+        clips = await asyncio.to_thread(
+            process_uploaded_file,
+            video_path=upload_path,
             keywords=keywords,
             min_duration=min_duration,
             max_duration=max_duration,

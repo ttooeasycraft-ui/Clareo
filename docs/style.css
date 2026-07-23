@@ -159,6 +159,118 @@ body {
   margin-right: auto;
 }
 
+/* ── Mode tabs ──────────────────────────────────────── */
+.mode-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 12px;
+}
+
+.mode-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text-soft);
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-family: var(--font);
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.mode-tab:hover {
+  border-color: rgba(0,220,180,0.3);
+  color: var(--text);
+}
+
+.mode-tab.active {
+  background: var(--teal-dim);
+  border-color: var(--border-glow);
+  color: var(--teal);
+}
+
+/* ── File drop zone ──────────────────────────────────── */
+.file-drop-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  padding: 32px 20px;
+  border: 1.5px dashed rgba(0,220,180,0.3);
+  border-radius: var(--radius-sm);
+  background: var(--surface2);
+  cursor: pointer;
+  text-align: center;
+  transition: border-color 0.2s, background 0.2s;
+  margin-bottom: 10px;
+}
+
+.file-drop-zone:hover {
+  border-color: rgba(0,220,180,0.6);
+  background: rgba(0,220,180,0.04);
+}
+
+.file-drop-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-soft);
+}
+
+.file-drop-sub {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.file-selected-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  font-size: 0.82rem;
+  color: var(--text-soft);
+}
+
+.file-selected-info svg { color: var(--teal); flex-shrink: 0; }
+
+.file-selected-info #file-selected-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.btn-file-clear {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: color 0.15s;
+  flex-shrink: 0;
+}
+
+.btn-file-clear:hover { color: var(--coral); }
+
+.btn-upload-go {
+  width: 100%;
+  justify-content: center;
+  padding: 11px;
+}
+
 /* ── Input card ─────────────────────────────────────── */
 .input-card {
   background: var(--surface);

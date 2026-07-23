@@ -292,6 +292,97 @@ function shake(id) {
   setTimeout(() => el.style.animation = "", 400);
 }
 
+// ─── Upload mode ─────────────────────────────────────────────────────────────
+function switchMode(mode) {
+  const linkMode = document.getElementById("mode-link");
+  const fileMode = document.getElementById("mode-file");
+  const tabLink  = document.getElementById("tab-link");
+  const tabFile  = document.getElementById("tab-file");
+
+  if (mode === "link") {
+    linkMode.style.display = "";
+    fileMode.style.display = "none";
+    tabLink.classList.add("active");
+    tabFile.classList.remove("active");
+    document.getElementById("video-url")?.focus();
+  } else {
+    linkMode.style.display = "none";
+    fileMode.style.display = "";
+    tabLink.classList.remove("active");
+    tabFile.classList.add("active");
+  }
+}
+
+function onFileSelected(input) {
+  const file = input.files && input.files[0];
+  const info = document.getElementById("file-selected-info");
+  const name = document.getElementById("file-selected-name");
+  if (file) {
+    const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+    name.textContent = `${file.name} (${sizeMB} MB)`;
+    info.style.display = "flex";
+  } else {
+    info.style.display = "none";
+  }
+}
+
+function clearFile() {
+  const input = document.getElementById("video-file");
+  if (input) input.value = "";
+  document.getElementById("file-selected-info").style.display = "none";
+}
+
+async function startUpload() {
+  const input = document.getElementById("video-file");
+  const file  = input && input.files && input.files[0];
+  if (!file) { shake("input-card"); return; }
+
+  const keywordsRaw = document.getElementById("keywords").value.trim();
+  const keywords    = keywordsRaw || null;
+  const minDuration = parseFloat(document.getElementById("min-duration").value) || 20;
+  const maxDuration = parseFloat(document.getElementById("max-duration").value) || 60;
+  const maxClips    = parseInt(document.getElementById("max-clips").value) || 5;
+
+  // Switch step-1 label to "upload" wording
+  const dlLabel = document.getElementById("psi-download-label");
+  if (dlLabel) dlLabel.textContent = "Enviando arquivo";
+
+  showSection("processing");
+  setProc(2, "Enviando arquivo...");
+
+  const form = new FormData();
+  form.append("file", file);
+  if (keywords) form.append("keywords", keywords);
+  form.append("min_clip_duration", minDuration);
+  form.append("max_clip_duration", maxDuration);
+  form.append("max_clips", maxClips);
+
+  try {
+    const res = await fetch(`${BACKEND_URL}/upload`, {
+      method: "POST",
+      body: form,
+      // No Content-Type header — browser sets multipart boundary automatically
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `Erro ${res.status}: ${res.statusText}`);
+    }
+
+    const { job_id } = await res.json();
+    currentJobId = job_id;
+    startPolling();
+  } catch (e) {
+    // Restore step-1 label on error
+    if (dlLabel) dlLabel.textContent = "Baixando vídeo";
+    showError(
+      e.message.includes("fetch")
+        ? "Não foi possível conectar ao servidor. Verifique se o backend está ativo."
+        : e.message
+    );
+  }
+}
+
 // ─── Init ────────────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
   // Focus input on load for faster UX

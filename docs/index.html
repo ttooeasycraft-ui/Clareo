@@ -48,25 +48,76 @@
 
       <!-- Main input -->
       <div class="input-card" id="input-card">
-        <div class="input-group">
-          <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-          </svg>
+
+        <!-- Mode tabs -->
+        <div class="mode-tabs">
+          <button class="mode-tab active" id="tab-link" onclick="switchMode('link')">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            Link
+          </button>
+          <button class="mode-tab" id="tab-file" onclick="switchMode('file')">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            Arquivo
+          </button>
+        </div>
+
+        <!-- Link mode -->
+        <div id="mode-link">
+          <div class="input-group">
+            <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+            </svg>
+            <input
+              type="url"
+              id="video-url"
+              class="url-input"
+              placeholder="Cole um link do YouTube, TikTok, Instagram..."
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button class="btn-primary" id="btn-go" onclick="startProcess()">
+              Gerar Clipes <span class="btn-arrow">→</span>
+            </button>
+          </div>
+          <p class="input-hint">
+            <span class="platform-pill">YouTube</span>
+            <span class="platform-pill">TikTok</span>
+            <span class="platform-pill">Instagram</span>
+            <span class="platform-pill">Twitch</span>
+            <span class="platform-pill">+1000</span>
+          </p>
+        </div>
+
+        <!-- File upload mode (hidden by default) -->
+        <div id="mode-file" style="display:none">
+          <label class="file-drop-zone" for="video-file" id="file-drop-zone">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="color:var(--teal);opacity:0.7">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <span class="file-drop-title">Arraste um vídeo ou clique para selecionar</span>
+            <span class="file-drop-sub">mp4 · mov · mkv · avi · webm — até 2 GB</span>
+          </label>
           <input
-            type="url"
-            id="video-url"
-            class="url-input"
-            placeholder="Cole um link do YouTube, TikTok, Instagram..."
-            autocomplete="off"
-            spellcheck="false"
+            type="file"
+            id="video-file"
+            accept=".mp4,.mov,.mkv,.avi,.webm,video/*"
+            style="display:none"
+            onchange="onFileSelected(this)"
           />
-          <button class="btn-primary" id="btn-go" onclick="startProcess()">
+          <div class="file-selected-info" id="file-selected-info" style="display:none">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            <span id="file-selected-name">—</span>
+            <button class="btn-file-clear" onclick="clearFile()" title="Remover">✕</button>
+          </div>
+          <button class="btn-primary btn-upload-go" id="btn-upload" onclick="startUpload()">
             Gerar Clipes <span class="btn-arrow">→</span>
           </button>
         </div>
 
-        <!-- Options row -->
+        <!-- Options row (shared) -->
         <div class="options-row">
           <label class="opt-label">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><polyline points="12,6 12,12 16,14"/></svg>
@@ -109,13 +160,6 @@
           />
         </div>
 
-        <p class="input-hint">
-          <span class="platform-pill">YouTube</span>
-          <span class="platform-pill">TikTok</span>
-          <span class="platform-pill">Instagram</span>
-          <span class="platform-pill">Twitch</span>
-          <span class="platform-pill">+1000</span>
-        </p>
       </div>
     </div>
 
@@ -176,7 +220,7 @@
       </div>
       <p class="proc-pct" id="proc-pct">0%</p>
       <div class="proc-steps-list" id="proc-steps-list">
-        <div class="proc-step-item" id="psi-download">⬇ Baixando vídeo</div>
+        <div class="proc-step-item" id="psi-download">⬇ <span id="psi-download-label">Baixando vídeo</span></div>
         <div class="proc-step-item" id="psi-transcribe">◎ Transcrevendo com Whisper</div>
         <div class="proc-step-item" id="psi-detect">✦ Detectando melhores momentos</div>
         <div class="proc-step-item" id="psi-cut">✂ Cortando e gerando legendas</div>
