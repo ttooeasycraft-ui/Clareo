@@ -84,6 +84,16 @@ def download_video(url: str, output_dir: Path) -> tuple[Path, Path]:
             actual = output_dir / f"video.{ext}"
             if actual != video_path and actual.exists():
                 actual.rename(video_path)
+    except Exception as exc:
+        err_str = str(exc)
+        if "Sign in to confirm" in err_str or "bot" in err_str.lower():
+            raise RuntimeError(
+                "YouTube bloqueou o download por detectar IP de servidor. "
+                "Para resolver: exporte seus cookies do YouTube (extensão "
+                "'Get cookies.txt LOCALLY' no Chrome/Firefox), depois cole o "
+                "conteúdo na variável de ambiente YTDLP_COOKIES no Railway."
+            ) from None
+        raise
     finally:
         if cookies_tmp_path:
             try:
